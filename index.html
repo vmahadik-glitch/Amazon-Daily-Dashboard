@@ -156,6 +156,8 @@ h2.sec{font-size:16px;margin:22px 0 4px;font-weight:700;color:var(--ink)}
     <button data-t="vendor">By Vendor</button>
     <button data-t="alerts">⚠ Alerts</button>
     <button data-t="insights">Insights</button>
+    <button data-t="day">📅 Day</button>
+    <button data-t="segwatch">📉 Segment watch</button>
     <span style="width:1px;background:var(--line);margin:2px 4px"></span>
     <button data-t="c_DE" class="ctab">🇩🇪 DE</button>
     <button data-t="c_ES" class="ctab">🇪🇸 ES</button>
@@ -224,6 +226,32 @@ h2.sec{font-size:16px;margin:22px 0 4px;font-weight:700;color:var(--ink)}
     <div id="cbsparktip" class="charttip"></div>
   </div>
   <div class="grid" id="cbgrid"></div>
+</div>
+
+<!-- SINGLE-DAY VIEW -->
+<div id="dayview" class="hidden">
+  <div class="controls" style="margin-top:0">
+    <div class="ctl" style="min-width:100%">
+      <label>Show stats for date</label>
+      <select id="daysel" style="font-family:Lato;font-size:14px;font-weight:700;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer;max-width:260px"></select>
+    </div>
+  </div>
+  <div class="kpis" style="margin:14px 0">
+    <div class="kpi big"><div class="k">Total revenue (this day)</div><div class="v" id="dy_tot"></div><div class="band" id="dy_sub"></div></div>
+    <div class="kpi"><div class="k">Zeotap Branded</div><div class="v" id="dy_brand"></div></div>
+    <div class="kpi teal"><div class="k">Distribution</div><div class="v" id="dy_dist"></div></div>
+  </div>
+  <div class="grid" id="dygrid"></div>
+  <div class="grid" id="dygrid2" style="margin-top:14px"></div>
+</div>
+
+<!-- SEGMENT WATCH -->
+<div id="segview" class="hidden">
+  <div class="panel">
+    <h2 class="sec" style="margin-top:0">Segment watch — delivering then dropped or stopped</h2>
+    <div class="sub" id="seg_sub" style="margin-bottom:6px"></div>
+    <div id="seg_body"></div>
+  </div>
 </div>
 
 <!-- STREAM FILTER (shared by alerts + insights) -->
@@ -346,7 +374,7 @@ const EYEOTA=['Eyeota','Experian','YouGov','Affinity Answers','Dun & Bradstreet'
 // standalone partners (checked after the umbrellas); Adsquare onboarded Aug 2026, arrives as "Adsquare Data > …"
 const OTHERV=['Mastercard','AlikeAudience','Datonics','Adsquare'];
 
-let view='branded', pace='ramp', uplift=15, band=15, streamFilter='both', mode='proj', monthSel='';
+let view='branded', pace='ramp', uplift=15, band=15, streamFilter='both', mode='proj', monthSel='', daySel='';
 let byDate={};
 function populateByDate(){ byDate={}; BASE.forEach(r=>{const [c,d,adv,seg,fee,imp]=r;(byDate[d]=byDate[d]||[]).push({c,d,adv,seg,fee,imp:imp||0});}); }
 
@@ -355,6 +383,7 @@ const fmt=n=>'$'+Math.round(n).toLocaleString('en-US');
 
 function vendorOf(seg){
   const s=String(seg).toLowerCase();
+  if(/^tnc(\s|-|$)/.test(s)) return 'TNC';   // TNC is a distinct DP; prefix wins (e.g. "TNC Yougov Shopper" → TNC)
   for(const v of NIELSEN){ if(s.includes(v.toLowerCase())) return 'Nielsen'; }
   for(const v of EYEOTA){ if(s.includes(v.toLowerCase())) return 'Eyeota'; }
   for(const v of OTHERV){ if(s.includes(v.toLowerCase())) return v; }
@@ -464,9 +493,12 @@ function switchTab(t){
   const isCountry=t.startsWith('c_');
   const isForecast=['branded','dist','vendor'].includes(t);
   const isCombined=t==='combined';
+  const isDay=t==='day', isSeg=t==='segwatch';
   const isFilterable=(t==='alerts'||t==='insights');
   $('forecast').classList.toggle('hidden',!isForecast);
   $('combinedview').classList.toggle('hidden',!isCombined);
+  $('dayview').classList.toggle('hidden',!isDay);
+  $('segview').classList.toggle('hidden',!isSeg);
   $('controls').classList.toggle('hidden',!isForecast && !isCountry && !isCombined);
   $('streamfilter').classList.toggle('hidden',!isFilterable);
   $('alertsview').classList.toggle('hidden',t!=='alerts');
@@ -480,8 +512,10 @@ function switchTab(t){
   else if(t==='alerts') renderAlerts();
   else if(t==='insights') renderInsights();
   else if(isCombined) renderCombined();
+  else if(isDay) renderDay();
+  else if(isSeg) renderSegwatch();
   else render();
-  if(view==='combined'||view==='alerts'||view==='insights') $('title').textContent='Amazon DSP Forecast — '+monthLabel();
+  if(view==='combined'||view==='alerts'||view==='insights'||view==='day'||view==='segwatch') $('title').textContent='Amazon DSP Forecast — '+monthLabel();
 }
 
 // ---------- COUNTRY DEEP-DIVE ----------
@@ -879,6 +913,88 @@ function renderCombined(){
 }
 function esc(s){s=String(s);return (s.length>36?s.slice(0,35)+'…':s).replace(/</g,'&lt;');}
 function escFull(s){return String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ---------- SINGLE-DAY VIEW ----------
+function fmtDay(d){ const dt=new Date(d+'T00:00:00'); return dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'}); }
+function renderDay(){
+  const all=Object.keys(byDate).sort();
+  if(!all.length){ $('dygrid').innerHTML='<div class="sub">No data.</div>'; return; }
+  const sel=$('daysel');
+  if(sel.options.length!==all.length){
+    sel.innerHTML=all.slice().reverse().map(d=>`<option value="${d}">${fmtDay(d)} · ${d}</option>`).join('');
+  }
+  if(!daySel || !byDate[daySel]) daySel=all[all.length-1];
+  sel.value=daySel;
+  const rows=byDate[daySel]||[];
+  let tB=0,tD=0; const ctry={}, ven={}, adv={};
+  rows.forEach(r=>{
+    const branded=streamOf(r.c,r.seg)==='branded';
+    if(branded) tB+=r.fee; else tD+=r.fee;
+    if(!ctry[r.c]) ctry[r.c]={b:0,d:0};
+    branded?ctry[r.c].b+=r.fee:ctry[r.c].d+=r.fee;
+    if(!branded){ const v=(r.c==='US'&&vendorOf(r.seg)==='Zeotap')?'Captify':vendorOf(r.seg); ven[v]=(ven[v]||0)+r.fee; }
+    adv[r.c+'|'+r.adv]=(adv[r.c+'|'+r.adv]||0)+r.fee;
+  });
+  $('dy_tot').textContent=fmt(tB+tD);
+  $('dy_brand').textContent=fmt(tB);
+  $('dy_dist').textContent=fmt(tD);
+  $('dy_sub').textContent=fmtDay(daySel)+' · actual, single day';
+  // per-country cards
+  const order=['DE','ES','FR','IT','UK','NL','US','IN'];
+  const cs=Object.keys(ctry).sort((a,b)=>(order.indexOf(a)+99*(order.indexOf(a)<0))-(order.indexOf(b)+99*(order.indexOf(b)<0)));
+  $('dygrid').innerHTML=cs.map(c=>{
+    const b=ctry[c].b,d=ctry[c].d,t=b+d;
+    return `<div class="card"><h3><span><span class="flag">${flags[c]||'🌐'}</span>${cname[c]||c}</span><span class="cty-tot">${fmt(t)}</span></h3>`+
+      `<div class="row sm"><span class="n" style="color:#C94E1A">Branded</span><span class="amt">${fmt(b)}</span></div>`+
+      `<div class="row sm"><span class="n" style="color:#3E4E5E">Distribution</span><span class="amt">${fmt(d)}</span></div></div>`;
+  }).join('') || '<div class="sub">No rows for this day.</div>';
+  // top vendors + top advertisers that day
+  const topV=Object.entries(ven).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const topA=Object.entries(adv).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  $('dygrid2').innerHTML=
+    `<div class="card"><h3><span>Top distribution partners</span></h3>${topV.map(([v,x])=>`<div class="row sm"><span class="n">${escFull(v)}</span><span class="amt">${fmt(x)}</span></div>`).join('')||'<div class="sub">—</div>'}</div>`+
+    `<div class="card"><h3><span>Top advertisers</span></h3>${topA.map(([k,x])=>`<div class="row sm"><span class="n">${flags[k.split('|')[0]]||''} ${escFull(k.split('|').slice(1).join('|'))}</span><span class="amt">${fmt(x)}</span></div>`).join('')||'<div class="sub">—</div>'}</div>`;
+}
+
+// ---------- SEGMENT WATCH (delivering → dropped / stopped) ----------
+function renderSegwatch(){
+  const dates=observedDates(), nD=dates.length;
+  if(nD<3){ $('seg_sub').textContent='Need at least 3 observed days in '+monthLabel()+' to detect drops.'; $('seg_body').innerHTML=''; return; }
+  const last=dates[nD-1], recent=dates.slice(-4,-1);
+  const map={};
+  allRows().forEach(r=>{
+    const k=r.c+'||'+r.seg;
+    if(!map[k]) map[k]={c:r.c,seg:r.seg,day:{},advs:{},tot:0};
+    map[k].day[r.d]=(map[k].day[r.d]||0)+r.fee; map[k].advs[r.adv]=1; map[k].tot+=r.fee;
+  });
+  const stopped=[], dropped=[];
+  Object.values(map).forEach(s=>{
+    const lastV=s.day[last]||0;
+    const priorVals=recent.map(d=>s.day[d]||0);
+    const activeRecent=priorVals.filter(v=>v>0).length;
+    const priorAvg=priorVals.reduce((a,b)=>a+b,0)/recent.length;
+    if(priorAvg<1 || activeRecent<2) return;          // was it delivering well recently?
+    if(lastV===0) stopped.push({...s,priorAvg,lastV,advn:Object.keys(s.advs).length});
+    else if(lastV < priorAvg*0.5) dropped.push({...s,priorAvg,lastV,drop:1-lastV/priorAvg,advn:Object.keys(s.advs).length});
+  });
+  stopped.sort((a,b)=>b.priorAvg-a.priorAvg);
+  dropped.sort((a,b)=>b.priorAvg-a.priorAvg);
+  $('seg_sub').innerHTML=`${monthLabel()} · comparing the latest day (<b>${fmtDay(last)}</b>) against the prior 3 days. "Delivering" = active on 2+ of those days. Full segment names shown.`;
+  function tbl(title,accent,list,isStop){
+    if(!list.length) return `<div style="margin-bottom:14px"><div class="mini" style="color:${accent};font-weight:700">${title}</div><div class="sub">None.</div></div>`;
+    const rows=list.slice(0,60).map(s=>{
+      const tag=isStop?`<span style="color:#B3261E;font-weight:700">stopped</span>`:`<span style="color:#B3261E;font-weight:700">▼ ${Math.round(s.drop*100)}%</span>`;
+      const partner=(s.c==='US'&&vendorOf(s.seg)==='Zeotap')?'Captify':(streamOf(s.c,s.seg)==='branded'?'Zeotap branded':vendorOf(s.seg));
+      return `<div class="segmini"><span style="max-width:62%">${flags[s.c]||''} <b>${escFull(s.seg)}</b><br><span class="sub" style="font-size:11px">${cname[s.c]||s.c} · ${escFull(partner)} · ${s.advn} advertiser${s.advn>1?'s':''}</span></span>`+
+        `<span style="text-align:right">${tag}<br><span class="sub" style="font-size:11px">avg ${fmt(s.priorAvg)}/day → ${fmt(s.lastV)}</span></span></div>`;
+    }).join('');
+    return `<div style="margin-bottom:16px"><div class="mini" style="color:${accent};font-weight:700;margin-bottom:4px">${title} (${list.length})</div>${rows}</div>`;
+  }
+  $('seg_body').innerHTML =
+    tbl('🛑 Stopped on the latest day', '#B3261E', stopped, true) +
+    tbl('📉 Dropped sharply (down 50%+ vs prior 3-day average)', '#C94E1A', dropped, false);
+}
+
 window.toggleExp=function(el){el.classList.toggle('open');const body=el.nextElementSibling;body.classList.toggle('open');};
 
 // ---------- ALERTS ----------
@@ -1050,7 +1166,7 @@ function handleFiles(files){
 
 $('tabs').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;switchTab(b.dataset.t);});
 $('streamseg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;[...$('streamseg').children].forEach(x=>x.classList.remove('on'));b.classList.add('on');streamFilter=b.dataset.s;if(view==='alerts')renderAlerts();else if(view==='insights')renderInsights();});
-function rerender(){ if(view.startsWith('c_')) renderCountry(view.slice(2)); else if(view==='combined') renderCombined(); else render(); }
+function rerender(){ if(view.startsWith('c_')) renderCountry(view.slice(2)); else if(view==='combined') renderCombined(); else if(view==='day') renderDay(); else if(view==='segwatch') renderSegwatch(); else render(); }
 $('modeseg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;[...$('modeseg').children].forEach(x=>x.classList.remove('on'));b.classList.add('on');mode=b.dataset.mode;
   // pacing + band only affect projections — dim them in actual mode
   const dim=mode==='act';['paceseg','customwrap','uplift','band'].forEach(id=>{const el=$(id);if(el){el.style.opacity=dim?0.4:1;el.style.pointerEvents=dim?'none':'auto';}});
@@ -1070,6 +1186,7 @@ function syncHeader(){
   if(view==='combined'||view==='alerts'||view==='insights') $('title').textContent='Amazon DSP Forecast — '+monthLabel();
 }
 $('monthsel').addEventListener('change',e=>{ monthSel=e.target.value; syncHeader(); rerender(); });
+$('daysel').addEventListener('change',e=>{ daySel=e.target.value; renderDay(); });
 // on load: honour #market=XX if present, else default to main branded view
 function initLanding(){
   const m=(location.hash||'').match(/market=([A-Z]{2})/i);
